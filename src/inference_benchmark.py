@@ -23,8 +23,6 @@ import torch.distributed as dist
 from torch.nn import functional as F
 from datetime import timedelta
 
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 class NormalizedLinear(nn.Linear):
     """Linear layer with normalized weights along embedding dimension"""
@@ -337,24 +335,6 @@ input_dim = 1024
 x_in = torch.randn(32, 50, 1024, dtype=torch.bfloat16).to(device)
 y = torch.randint(0, 1, (1024, 1), dtype=torch.bfloat16).to(device)
 
-from torch.utils.data import Dataset, DataLoader
-class RandomDataset(Dataset):
-    def __init__(self, num_samples, seq_length, embed_dim):
-        super(RandomDataset, self).__init__()
-        self.num_samples = num_samples
-        self.seq_length = seq_length
-        self.embed_dim = embed_dim
-        # Synthetic data for illustration; replace with real data as needed
-        self.inputs = torch.randn(num_samples, seq_length, embed_dim)
-        self.targets = torch.randn(num_samples, seq_length, embed_dim)
-
-    def __len__(self):
-        return self.num_samples
-
-    def __getitem__(self, idx):
-        return self.inputs[idx], self.targets[idx]
-dataset = RandomDataset(320, 50, 1024)
-
 def run_inference_benchmark(model, x_in, num_runs=500):
     execution_times = []
     print(f"Running for {num_runs} times")
@@ -378,79 +358,6 @@ def run_inference_benchmark(model, x_in, num_runs=500):
 
     return out
 
-
-def run_attention_training_benchmark(model, dataset, batch_size=32, num_epochs=20):
-    """
-    Benchmarks the training speed of an attention module within a Transformer-like model.
-
-    Args:
-        model (torch.nn.Module): The Transformer model containing the attention module.
-        dataset: The dataset to train on.
-        batch_size (int, optional): Number of samples per batch. Defaults to 32.
-        num_epochs (int, optional): Number of training epochs. Defaults to 10.
-
-    Returns:
-        dict: A dictionary containing benchmarking statistics.
-    """
-    device = next(model.parameters()).device
-    model.train()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1.5e-3)
-    loss_function = torch.nn.CrossEntropyLoss()
-    
-    # Initialize execution times list
-    execution_times = []
-    
-    # Create DataLoader
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    
-    # Set random seeds for reproducibility
-    torch.manual_seed(42)
-    np.random.seed(42)
-    
-    for epoch in range(1, num_epochs + 1):
-        print(f"Epoch {epoch}/{num_epochs}")
-        for batch in tqdm(dataloader, desc="Training"):
-            inputs, targets = batch
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-            
-            start_time = time.perf_counter()
-            
-            optimizer.zero_grad()
-            outputs = model(inputs)
-            loss = loss_function(outputs, targets)
-            
-            loss.backward()
-            optimizer.step()
-            
-            # Synchronize CUDA operations for accurate timing
-            if device.type == 'cuda':
-                torch.cuda.synchronize()
-            
-            end_time = time.perf_counter()
-            elapsed_time = end_time - start_time
-            execution_times.append(elapsed_time)
-    
-    # Calculate statistics
-    average_time = np.mean(execution_times)
-    std_deviation = np.std(execution_times)
-    total_steps = len(dataloader) * num_epochs
-    
-    print("\nExecution Time Summary:")
-    print(f"Average Time per Step: {average_time:.6f} seconds")
-    print(f"Standard Deviation: {std_deviation:.6f} seconds")
-    print(f"Total Steps: {total_steps}")
-    
-    # Clear cache if using CUDA
-    if device.type == 'cuda':
-        torch.cuda.empty_cache()
-    
-    return {
-        "average_time_sec_per_step": average_time,
-        "std_deviation_sec": std_deviation,
-        "total_steps": total_steps
-    }
-
 # -----------------------------------------------------------------------------
 # baseline (not normalized)
 model_args = dict(use_nGPT=0, n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size, base_scale=base_scale, 
@@ -466,8 +373,6 @@ print(f"baseline model: {model_baseline}")
 model_baseline(x_in)
 out_baseline = run_inference_benchmark(model_baseline, x_in)
 
-tr_stats_base = run_attention_training_benchmark(model_baseline, dataset)
-
 # -----------------------------------------------------------------------------
 # normalized model
 model_args = dict(use_nGPT=1, n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size, base_scale=base_scale, 
@@ -482,4 +387,6 @@ print(f"normalized model: {model}")
 
 out = run_inference_benchmark(model, x_in)
 
-tr_stats_ngpt = run_attention_training_benchmark(model, dataset)
+
+
+print(f"outputs agree: {(out == out_baseline).all()}")
