@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import numpy as np
-from flash_attn import flash_attn_qkvpacked_func, flash_attn_func
 
 
 class Block(nn.Module):
@@ -92,9 +91,6 @@ class Block(nn.Module):
         k = k.view(B, T, self.config.n_head, self.config.n_embd // self.config.n_head)
         v = v.view(B, T, self.config.n_head, self.config.n_embd // self.config.n_head)
 
-        q = q.transpose(2, 1)
-        k = k.transpose(2, 1)
-
         if self.config.use_nGPT == 1:
             sqk = (self.sqk * (self.sqk_init_value / self.sqk_init_scaling)).view(
                 1, 1, self.config.n_head, self.config.n_embd // self.config.n_head
@@ -119,26 +115,11 @@ class Block(nn.Module):
                 is_causal=True,
                 scale=softmax_scale,
             )
-        elif flash_attn_func is not None:
-            # Fallback to flash-attention package
-            y = flash_attn_func(
-                q.to(dtype=torch.bfloat16),
-                k.to(dtype=torch.bfloat16),
-                v.to(dtype=torch.bfloat16),
-                dropout_p=0.0,
-                softmax_scale=softmax_scale,
-                causal=True,
-            )
-        else:
-            # Fallback to regular attention
-            att = (q @ k.transpose(-2, -1)) * softmax_scale
-            att = F.softmax(att, dim=-1)
-            y = att @ v.transpose(2, 1)
 
         y = y.transpose(2, 1)
-        y = y.to(dtype=q.dtype)
         y = y.contiguous().view(B, T, self.config.n_embd)
 
+        y = y.to(dtype=torch.bfloat16)
         h_att = self.att_c_proj(y)
 
         if self.config.use_nGPT == 0:
@@ -154,7 +135,7 @@ class Block(nn.Module):
             res = A_norm + lr * (B_norm - A_norm)
             h = self.justnorm(res)
 
-        hin = h
+        hin = h.to(dtype=torch.bfloat16)
         if self.config.use_nGPT == 0:
             hin = self.rmsnorm_mlp(h)
         uv = self.c_fc(hin)
@@ -164,7 +145,7 @@ class Block(nn.Module):
             )
             uv = suv * uv
         u, v = torch.chunk(uv, 2, dim=-1)
-        x_mlp = u * self.silu(v)
+        x_mlp = (u * self.silu(v)).to(dtype=torch.bfloat16)
         h_mlp = self.mlp_c_proj(x_mlp)
 
         if self.config.use_nGPT == 0:
