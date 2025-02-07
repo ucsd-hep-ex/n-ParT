@@ -253,6 +253,9 @@ def main(args):
     v["part_pt"] = np.hypot(v["part_px"], v["part_py"])
     v["part_pt_log"] = np.log(v["part_pt"])
     v["part_e_log"] = np.log(v["part_energy"])
+    v["part_logptrel"] = np.log(v["part_pt"] / v["jet_pt"])
+    v["part_logerel"] = np.log(v["part_energy"] / v["jet_energy"])
+    v["part_deltaR"] = np.hypot(v["part_deta"], v["part_dphi"])
 
     features = []
     labels = []
@@ -263,8 +266,22 @@ def main(args):
         part_dphi = zero_pad_jets(v["part_dphi"][jet_index].to_numpy().reshape(-1, 1))
         part_pt_log = zero_pad_jets(v["part_pt_log"][jet_index].to_numpy().reshape(-1, 1))
         part_e_log = zero_pad_jets(v["part_e_log"][jet_index].to_numpy().reshape(-1, 1))
+        part_logptrel = zero_pad_jets(v["part_logptrel"][jet_index].to_numpy().reshape(-1, 1))
+        part_logerel = zero_pad_jets(v["part_logerel"][jet_index].to_numpy().reshape(-1, 1))
+        part_deltaR = zero_pad_jets(v["part_deltaR"][jet_index].to_numpy().reshape(-1, 1))
 
-        jet = np.concatenate([part_deta, part_dphi, part_pt_log, part_e_log], axis=1).transpose()
+        jet = np.concatenate(
+            [
+                part_deta,
+                part_dphi,
+                part_pt_log,
+                part_e_log,
+                part_logptrel,
+                part_logerel,
+                part_deltaR,
+            ],
+            axis=1,
+        ).transpose()
         y = v["label"][jet_index]
 
         features.append(jet)
