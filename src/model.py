@@ -287,8 +287,6 @@ class Encoder(nn.Module):
         if config.use_nGPT == 0:
             self.rmsnorm_f = RMSNorm(config.n_embd)
 
-        print("number of parameters: %.2fM" % (ModelUtils.get_num_params(self) / 1e6,))
-
     def get_num_params(self):
         return ModelUtils.get_num_params(self)
 
@@ -303,32 +301,11 @@ class Encoder(nn.Module):
 
         # Input projection with nGPT rules
         if self.config.use_nGPT == 0:
+            x = self.input_proj(x)
             if hasattr(self, "rmsnorm_input"):
                 x = self.rmsnorm_input(x)
-            x = self.input_proj(x)
         else:
-            h_proj = self.input_proj(x.to(dtype=torch.bfloat16))
-            lr = self.input_alpha * (self.input_alpha_init_value / self.input_alpha_init_scaling)
-            lr = torch.abs(lr)
-
-            A_norm = ModelUtils.justnorm(x)
-            B_norm = ModelUtils.justnorm(h_proj)
-
-            res = A_norm + lr * (B_norm - A_norm)
-            x = ModelUtils.justnorm(res)
-
-        # Pass through transformer blocks
-        for block in self.blocks:
-            x = block(x)
-
-        # Final normalization if using standard transformer
-        if self.config.use_nGPT == 0:
-            x = self.rmsnorm_f(x)
-
-        # Scale output if using nGPT
-        if self.config.use_nGPT == 1:
-            sz = self.sz * (self.sz_init_value / self.sz_init_scaling)
-            x = sz.unsqueeze(0).unsqueeze(0) * x
+            x = self.input_proj(x.to(dtype=torch.bfloat16))
 
         return x
 
@@ -373,7 +350,7 @@ class Projector(nn.Module):
             curr_dim = config.n_embd
             while curr_dim > 2:
                 dims.append(curr_dim)
-                curr_dim = curr_dim // 2
+                curr_dim = curr_dim // 4
             dims.append(2)
         else:
             dims = [int(d) for d in dims.split("-")]
@@ -381,48 +358,53 @@ class Projector(nn.Module):
         # Create layers
         self.layers = nn.ModuleList()
         for i in range(len(dims) - 1):
-            # Single linear layer for each dimension reduction
             layer = nn.ModuleDict(
-                {"linear": nn.Linear(dims[i], dims[i + 1], bias=config.bias, dtype=torch.bfloat16)}
+                {
+                    # Project to 2x dimension for UV gating
+                    "linear": nn.Linear(
+                        dims[i], 2 * dims[i + 1], bias=config.bias, dtype=torch.bfloat16
+                    ),
+                    "proj": nn.Linear(
+                        dims[i + 1], dims[i + 1], bias=config.bias, dtype=torch.bfloat16
+                    ),
+                }
             )
+
+            if config.use_nGPT == 1:
+                # Scale parameter for UV
+                suv = nn.Parameter(
+                    config.base_scale * torch.ones(2 * dims[i + 1], dtype=torch.float32)
+                )
+                layer["suv"] = nn.ParameterDict({"param": suv})
+                layer.suv_init_value = 1.0
+                layer.suv_init_scaling = 1.0
+
             self.layers.append(layer)
 
-            # Add parameters for nGPT if needed
-            if config.use_nGPT == 1:
-                # MLP alpha parameters
-                mlp_alpha_init_value = 0.05
-                mlp_alpha_init_scaling = config.base_scale
-                layer["mlp_alpha"] = nn.Parameter(
-                    mlp_alpha_init_scaling * torch.ones(dims[i + 1], dtype=torch.float32)
-                )
-                layer.mlp_alpha_init_value = mlp_alpha_init_value
-                layer.mlp_alpha_init_scaling = mlp_alpha_init_scaling
-
         if config.use_nGPT == 0:
-            self.rmsnorm_layers = nn.ModuleList([RMSNorm(dim) for dim in dims[1:]])
+            self.rmsnorm_layers = nn.ModuleList([RMSNorm(dims[i]) for i in range(len(dims) - 1)])
+
+        self.silu = nn.SiLU()
 
     def forward(self, h):
         for i, layer in enumerate(self.layers):
-            hin = h.to(dtype=torch.bfloat16)
-
             if self.config.use_nGPT == 0:
                 hin = self.rmsnorm_layers[i](h)
-
-            h_mlp = layer["linear"](hin)
-
-            if self.config.use_nGPT == 0:
-                h = h + h_mlp
             else:
-                lr = layer["mlp_alpha"] * (
-                    layer.mlp_alpha_init_value / layer.mlp_alpha_init_scaling
+                hin = h.to(dtype=torch.bfloat16)
+
+            # UV gating
+            uv = layer["linear"](hin)
+
+            if self.config.use_nGPT == 1:
+                suv = layer["suv"]["param"] * (
+                    (layer.suv_init_value / layer.suv_init_scaling) * (self.config.n_embd**0.5)
                 )
-                lr = torch.abs(lr)
+                uv = suv * uv
 
-                A_norm = ModelUtils.justnorm(h)
-                B_norm = ModelUtils.justnorm(h_mlp)
-
-                res = A_norm + lr * (B_norm - A_norm)
-                h = ModelUtils.justnorm(res)
+            u, v = torch.chunk(uv, 2, dim=-1)
+            x = u * self.silu(v)
+            h = layer["proj"](x.to(dtype=torch.bfloat16))
 
         return h
 
