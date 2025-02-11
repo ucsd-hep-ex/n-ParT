@@ -8,6 +8,16 @@ from torch.nn import functional as F
 import numpy as np
 
 
+class ScaledDotProductAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, q, k, v, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None):
+        return F.scaled_dot_product_attention(
+            q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
+        )
+
+
 class Block(nn.Module):
     def __init__(self, config, iblock):
         super().__init__()
@@ -17,6 +27,7 @@ class Block(nn.Module):
         self.qkv = nn.Linear(
             config.n_embd, 3 * config.n_embd, bias=config.bias, dtype=torch.bfloat16
         )
+        self.attention = ScaledDotProductAttention()
         self.att_c_proj = nn.Linear(
             config.n_embd, config.n_embd, bias=config.bias, dtype=torch.bfloat16
         )
@@ -71,7 +82,7 @@ class Block(nn.Module):
             raise ValueError("NaN values detected in normalization result")
         return res
 
-    def forward(self, h):
+    def forward(self, h, mask=None):
         B, T, C = h.size()
         if C != self.config.n_embd:
             raise ValueError(f"Expected embedding dim {self.config.n_embd}, got {C}")
@@ -87,16 +98,19 @@ class Block(nn.Module):
         qkv = self.qkv(hin)
         q, k, v = qkv.chunk(3, dim=-1)
 
-        q = q.view(B, T, self.config.n_head, self.config.n_embd // self.config.n_head)
-        k = k.view(B, T, self.config.n_head, self.config.n_embd // self.config.n_head)
-        v = v.view(B, T, self.config.n_head, self.config.n_embd // self.config.n_head)
-
-        # q = q.transpose(2, 1)
-        # k = k.transpose(2, 1)
+        q = q.view(B, T, self.config.n_head, self.config.n_embd // self.config.n_head).transpose(
+            1, 2
+        )
+        k = k.view(B, T, self.config.n_head, self.config.n_embd // self.config.n_head).transpose(
+            1, 2
+        )
+        v = v.view(B, T, self.config.n_head, self.config.n_embd // self.config.n_head).transpose(
+            1, 2
+        )
 
         if self.config.use_nGPT == 1:
             sqk = (self.sqk * (self.sqk_init_value / self.sqk_init_scaling)).view(
-                1, 1, self.config.n_head, self.config.n_embd // self.config.n_head
+                1, self.config.n_head, 1, self.config.n_embd // self.config.n_head
             )
             q = sqk * ModelUtils.justnorm(q)
             k = sqk * ModelUtils.justnorm(k)
@@ -108,13 +122,22 @@ class Block(nn.Module):
             softmax_scale = sqrt_head_dim
 
         # Use PyTorch 2.0's native flash attention when available
-        y = F.scaled_dot_product_attention(
+        # y = F.scaled_dot_product_attention(
+        #     q.to(dtype=torch.bfloat16),
+        #     k.to(dtype=torch.bfloat16),
+        #     v.to(dtype=torch.bfloat16),
+        #     attn_mask=mask,
+        #     dropout_p=0.0,
+        #     is_causal=False,
+        #     scale=softmax_scale,
+        # )
+        y = self.attention(
             q.to(dtype=torch.bfloat16),
             k.to(dtype=torch.bfloat16),
             v.to(dtype=torch.bfloat16),
-            attn_mask=None,
+            attn_mask=mask,
             dropout_p=0.0,
-            is_causal=True,
+            is_causal=False,
             scale=softmax_scale,
         )
 
@@ -290,14 +313,25 @@ class Encoder(nn.Module):
     def get_num_params(self):
         return ModelUtils.get_num_params(self)
 
-    def forward(self, x):
+    def make_mask(self, is_padded):
+        # is_padded: [B, T], where True indicates padded tokens.
+        # We want a mask of shape [B, T, T] that indicates valid keys for each query.
+        valid = ~is_padded  # [B, T]  (True means valid)
+        mask = valid.unsqueeze(1).expand(-1, is_padded.size(1), -1)  # [B, T, T]
+        mask = mask.unsqueeze(1)  # [B, 1, T, T]
+        return mask
+
+    def forward(self, inpt):
+        x = inpt + 0.0
         if x.dim() != 3:
             raise ValueError(f"Expected 3D input (batch, particles, features), got {x.dim()}D")
         if x.size(-1) != self.config.input_dim:
             raise ValueError(f"Expected input dim {self.config.input_dim}, got {x.size(-1)}")
 
-        # x shape: (batch_size, num_particles, input_dim)
         b, p, _ = x.size()
+        # Create padding mask from first feature (assumes 0 = padding token)
+        is_padded = x[:, :, 0] == 0  # [batch, seq_len]
+        attention_mask = self.make_mask(is_padded)
 
         # Input projection with nGPT rules
         if self.config.use_nGPT == 0:
@@ -307,6 +341,8 @@ class Encoder(nn.Module):
         else:
             x = self.input_proj(x.to(dtype=torch.bfloat16))
 
+        for block in self.blocks:
+            x = block(x, attention_mask)
         return x
 
     def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
