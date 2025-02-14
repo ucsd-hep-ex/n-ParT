@@ -70,18 +70,6 @@ class Block(nn.Module):
                 self.suv_init_scaling * torch.ones(2 * 4 * config.n_embd, dtype=torch.float32)
             )
 
-    # Rest of the Block class implementation remains the same
-    def justnorm(self, x, eps=1e-6):
-        norm = x.norm(p=2, dim=-1, keepdim=True)
-        # Check for NaN values in norm
-        if torch.isnan(norm).any():
-            raise ValueError("NaN values detected in norm calculation")
-        res = x / (norm + eps)
-        # Check for NaN values in result
-        if torch.isnan(res).any():
-            raise ValueError("NaN values detected in normalization result")
-        return res
-
     def forward(self, h, mask=None):
         B, T, C = h.size()
         if C != self.config.n_embd:
@@ -235,12 +223,14 @@ class RMSNorm(torch.nn.Module):
 
 class ModelUtils:
     @staticmethod
-    def justnorm(x, eps=1e-6):
-        norm = x.norm(p=2, dim=-1, keepdim=True)
+    def justnorm(x, idim=-1, eps=1e-6):
+        dtype = x.dtype
+        x = x.float()
+        norm = x.norm(p=2, dim=idim, keepdim=True)
         # Check for NaN values in norm
         if torch.isnan(norm).any():
             raise ValueError("NaN values detected in norm calculation")
-        res = x / (norm + eps)
+        res = (x / (norm + eps)).to(dtype=dtype)
         # Check for NaN values in result
         if torch.isnan(res).any():
             raise ValueError("NaN values detected in normalization result")
