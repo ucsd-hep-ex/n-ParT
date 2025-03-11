@@ -117,12 +117,12 @@ def normalize_matrices(model):
             block.qkv.weight.data.copy_(ModelUtils.justnorm(block.qkv.weight.data, 1))
 
             # Attention output projection
-            block.att_c_proj.weight.data.copy_(ModelUtils.justnorm(block.att_c_proj.weight.data, 0))
+            block.att_c_proj.weight.data.copy_(ModelUtils.justnorm(block.att_c_proj.weight.data, 1))
 
             # MLP layers
             block.c_fc.weight.data.copy_(ModelUtils.justnorm(block.c_fc.weight.data, 1))
 
-            block.mlp_c_proj.weight.data.copy_(ModelUtils.justnorm(block.mlp_c_proj.weight.data, 0))
+            block.mlp_c_proj.weight.data.copy_(ModelUtils.justnorm(block.mlp_c_proj.weight.data, 1))
 
         # Normalize projector layers
         for layer in model.projector.layers:
@@ -130,7 +130,7 @@ def normalize_matrices(model):
             layer["linear"].weight.data.copy_(ModelUtils.justnorm(layer["linear"].weight.data, 1))
 
             # Projection layer
-            layer["proj"].weight.data.copy_(ModelUtils.justnorm(layer["proj"].weight.data, 0))
+            layer["proj"].weight.data.copy_(ModelUtils.justnorm(layer["proj"].weight.data, 1))
 
     except Exception as e:
         print(f"Error during matrix normalization: {e}")
@@ -153,9 +153,9 @@ def compute_weighted_norms(model):
     for block in model.encoder.blocks:
         # Compute norms along the last dimension (-1), as per justnorm
         qkv_norm = torch.norm(block.qkv.weight.float(), p=2, dim=1).detach().cpu().numpy()
-        att_c_proj_norm = torch.norm(block.att_c_proj.weight.float(), p=2, dim=0).detach().cpu().numpy()
+        att_c_proj_norm = torch.norm(block.att_c_proj.weight.float(), p=2, dim=1).detach().cpu().numpy()
         c_fc_norm = torch.norm(block.c_fc.weight.float(), p=2, dim=1).detach().cpu().numpy()
-        mlp_c_proj_norm = torch.norm(block.mlp_c_proj.weight.float(), p=2, dim=0).detach().cpu().numpy()
+        mlp_c_proj_norm = torch.norm(block.mlp_c_proj.weight.float(), p=2, dim=1).detach().cpu().numpy()
 
         # Store the mean norm per layer
         block_norms.append(np.mean([
@@ -171,7 +171,7 @@ def compute_weighted_norms(model):
     projector_norms = []
     for layer in model.projector.layers:
         linear_norm = torch.norm(layer["linear"].weight.float(), p=2, dim=1).detach().cpu().numpy()
-        proj_norm = torch.norm(layer["proj"].weight.float(), p=2, dim=0).detach().cpu().numpy()
+        proj_norm = torch.norm(layer["proj"].weight.float(), p=2, dim=1).detach().cpu().numpy()
         projector_norms.append(np.mean([np.mean(linear_norm), np.mean(proj_norm)]))
 
     norms["projector_layers"] = np.array(projector_norms)
@@ -180,10 +180,7 @@ def compute_weighted_norms(model):
 
 
 def check_normalization(model, tolerance=1e-2):
-    """
-    Checks if the weight matrices that were normalized in normalize_matrices
-    still have a mean norm close to 1.
-    """
+
     norms = compute_weighted_norms(model)
 
     encoder_mean_norm = np.mean(norms["encoder_blocks"])
@@ -211,15 +208,7 @@ def check_normalization(model, tolerance=1e-2):
 
 
 
-def plot_embedding_norms(model, save_path):
-    """
-    Plots the distribution of norms of input embeddings, encoder blocks, and projector layers on a single plot.
-    
-    Args:
-        models (list): List of trained models.
-        model_labels (list): Corresponding labels for the models.
-        save_path (str): Path to save the figure.
-    """
+def plot_embedding_norms(model, save_path, fig_name="embedding_norms.png"):
 
     plt.figure(figsize=(8, 6))
 
@@ -253,7 +242,7 @@ def plot_embedding_norms(model, save_path):
 
     plt.ylim(0.5, 1.5)
 
-    fig_path = os.path.join(save_path, "embedding_norms.png")
+    fig_path = os.path.join(save_path, fig_name)
     plt.savefig(fig_path, dpi=300, bbox_inches='tight')
     print(f"Figure saved at: {save_path}")
 
@@ -435,6 +424,12 @@ def main(args):
         pbar = tqdm(data_iter, total=len(train_dataloader)-1, desc="Training")
 
         for i, (next_features, next_labels) in enumerate(pbar):
+
+            if i % 50 == 0:
+                check_normalization(model)
+                print(f"Model loaded and checked for {epoch}th iter")
+                plot_embedding_norms(model, save_path=out_dir, fig_name = f"embedding_norms {epoch}_{i}.png")
+            
             optimizer.zero_grad()
             lr = get_lr(i, epoch) if decay_lr else args.learning_rate
             for param_group in optimizer.param_groups:

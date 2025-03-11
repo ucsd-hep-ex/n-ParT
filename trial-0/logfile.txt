@@ -1,11 +1,11 @@
-Device 0: NVIDIA GeForce GTX 1080
+Device 0: NVIDIA GeForce RTX 3090
 logfile initialised
 output dimension: 1024
 batch size: 64
 using full dataset for training
 number of jets for training: 1.211000e+06
 number of jets for validation: 4.030000e+05
-time taken to load and preprocess data: 15.64 seconds
+time taken to load and preprocess data: 10.09 seconds
 Classifier(
   (encoder): Encoder(
     (input_proj): Linear(in_features=7, out_features=1024, bias=True)
