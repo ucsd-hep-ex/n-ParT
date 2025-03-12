@@ -1,0 +1,54 @@
+Device 0: NVIDIA GeForce RTX 3090
+logfile initialised
+output dimension: 1024
+batch size: 64
+using full dataset for training
+number of jets for training: 1.211000e+06
+number of jets for validation: 4.030000e+05
+time taken to load and preprocess data: 10.09 seconds
+Classifier(
+  (encoder): Encoder(
+    (input_proj): Linear(in_features=7, out_features=1024, bias=True)
+    (drop): Dropout(p=0.0, inplace=False)
+    (blocks): ModuleList(
+      (0-3): 4 x Block(
+        (qkv): Linear(in_features=1024, out_features=3072, bias=True)
+        (attention): ScaledDotProductAttention()
+        (att_c_proj): Linear(in_features=1024, out_features=1024, bias=True)
+        (c_fc): Linear(in_features=1024, out_features=8192, bias=True)
+        (silu): SiLU()
+        (mlp_c_proj): Linear(in_features=4096, out_features=1024, bias=True)
+      )
+    )
+  )
+  (projector): Projector(
+    (layers): ModuleList(
+      (0): ModuleDict(
+        (linear): Linear(in_features=1024, out_features=512, bias=True)
+        (proj): Linear(in_features=256, out_features=256, bias=True)
+        (suv): ParameterDict(  (param): Parameter containing: [torch.cuda.FloatTensor of size 512 (cuda:0)])
+      )
+      (1): ModuleDict(
+        (linear): Linear(in_features=256, out_features=128, bias=True)
+        (proj): Linear(in_features=64, out_features=64, bias=True)
+        (suv): ParameterDict(  (param): Parameter containing: [torch.cuda.FloatTensor of size 128 (cuda:0)])
+      )
+      (2): ModuleDict(
+        (linear): Linear(in_features=64, out_features=32, bias=True)
+        (proj): Linear(in_features=16, out_features=16, bias=True)
+        (suv): ParameterDict(  (param): Parameter containing: [torch.cuda.FloatTensor of size 32 (cuda:0)])
+      )
+      (3): ModuleDict(
+        (linear): Linear(in_features=16, out_features=8, bias=True)
+        (proj): Linear(in_features=4, out_features=4, bias=True)
+        (suv): ParameterDict(  (param): Parameter containing: [torch.cuda.FloatTensor of size 8 (cuda:0)])
+      )
+      (4): ModuleDict(
+        (linear): Linear(in_features=4, out_features=4, bias=True)
+        (proj): Linear(in_features=2, out_features=2, bias=True)
+        (suv): ParameterDict(  (param): Parameter containing: [torch.cuda.FloatTensor of size 4 (cuda:0)])
+      )
+    )
+    (silu): SiLU()
+  )
+)
