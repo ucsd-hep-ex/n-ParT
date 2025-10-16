@@ -33,6 +33,10 @@ from sklearn import metrics
 from src.model import Classifier, GPTConfig, ModelUtils
 from src.dataset.ParticleDataset import ParticleDataset
 
+import matplotlib.pyplot as plt
+import copy
+
+
 # set the number of threads that pytorch will use
 torch.set_num_threads(2)
 
@@ -113,12 +117,12 @@ def normalize_matrices(model):
             block.qkv.weight.data.copy_(ModelUtils.justnorm(block.qkv.weight.data, 1))
 
             # Attention output projection
-            block.att_c_proj.weight.data.copy_(ModelUtils.justnorm(block.att_c_proj.weight.data, 0))
+            block.att_c_proj.weight.data.copy_(ModelUtils.justnorm(block.att_c_proj.weight.data, 1))
 
             # MLP layers
             block.c_fc.weight.data.copy_(ModelUtils.justnorm(block.c_fc.weight.data, 1))
 
-            block.mlp_c_proj.weight.data.copy_(ModelUtils.justnorm(block.mlp_c_proj.weight.data, 0))
+            block.mlp_c_proj.weight.data.copy_(ModelUtils.justnorm(block.mlp_c_proj.weight.data, 1))
 
         # Normalize projector layers
         for layer in model.projector.layers:
@@ -126,11 +130,125 @@ def normalize_matrices(model):
             layer["linear"].weight.data.copy_(ModelUtils.justnorm(layer["linear"].weight.data, 1))
 
             # Projection layer
-            layer["proj"].weight.data.copy_(ModelUtils.justnorm(layer["proj"].weight.data, 0))
+            layer["proj"].weight.data.copy_(ModelUtils.justnorm(layer["proj"].weight.data, 1))
 
     except Exception as e:
         print(f"Error during matrix normalization: {e}")
         raise
+
+
+
+def compute_weighted_norms(model):
+
+    norms = {}
+
+    # Compute norms for input embeddings
+    input_embeds = model.encoder.input_proj.weight.data
+    input_norms = torch.norm(input_embeds.float(), p=2, dim=1).detach().cpu().numpy()
+    norms["input_embeddings"] = np.sort(input_norms)[::-1]
+    
+    # Compute norms for transformer encoder blocks
+    block_norms = []
+
+    for block in model.encoder.blocks:
+        # Compute norms along the last dimension (-1), as per justnorm
+        qkv_norm = torch.norm(block.qkv.weight.float(), p=2, dim=1).detach().cpu().numpy()
+        att_c_proj_norm = torch.norm(block.att_c_proj.weight.float(), p=2, dim=1).detach().cpu().numpy()
+        c_fc_norm = torch.norm(block.c_fc.weight.float(), p=2, dim=1).detach().cpu().numpy()
+        mlp_c_proj_norm = torch.norm(block.mlp_c_proj.weight.float(), p=2, dim=1).detach().cpu().numpy()
+
+        # Store the mean norm per layer
+        block_norms.append(np.mean([
+            np.mean(qkv_norm),
+            np.mean(att_c_proj_norm),
+            np.mean(c_fc_norm),
+            np.mean(mlp_c_proj_norm)
+        ]))
+
+    norms["encoder_blocks"] = np.array(block_norms)
+
+    # Compute norms for projector layers
+    projector_norms = []
+    for layer in model.projector.layers:
+        linear_norm = torch.norm(layer["linear"].weight.float(), p=2, dim=1).detach().cpu().numpy()
+        proj_norm = torch.norm(layer["proj"].weight.float(), p=2, dim=1).detach().cpu().numpy()
+        projector_norms.append(np.mean([np.mean(linear_norm), np.mean(proj_norm)]))
+
+    norms["projector_layers"] = np.array(projector_norms)
+
+    return norms
+
+
+def check_normalization(model, tolerance=1e-2):
+
+    norms = compute_weighted_norms(model)
+
+    encoder_mean_norm = np.mean(norms["encoder_blocks"])
+    projector_mean_norm = np.mean(norms["projector_layers"])
+    input_mean_norm = np.mean(norms["input_embeddings"])
+
+    print(f"Mean Norm (Encoder Blocks): {encoder_mean_norm:.5f}")
+    print(f"Mean Norm (Projector Layers): {projector_mean_norm:.5f}")
+    print(f"Mean Norm (Input Embeddings): {input_mean_norm:.5f}")
+
+    issues = []
+
+    if abs(encoder_mean_norm - 1.0) > tolerance:
+        issues.append("Encoder Blocks")
+    if abs(projector_mean_norm - 1.0) > tolerance:
+        issues.append("Projector Layers")
+    if abs(input_mean_norm - 1.0) > tolerance:
+        issues.append("Input Embeddings")
+
+    if issues:
+        print(f"WARNING: The following components are NOT properly normalized: {', '.join(issues)}")
+    else:
+        print("All checked model weights are properly normalized.")
+
+
+
+
+def plot_embedding_norms(model, save_path, fig_name="embedding_norms.png"):
+
+    plt.figure(figsize=(8, 6))
+
+    
+    norms = compute_weighted_norms(model)
+
+        
+    input_norms = np.sort(norms["input_embeddings"])[::-1]  # Sorted in descending order
+    encoder_norms = np.sort(norms["encoder_blocks"])[::-1]  # Sorted
+    projector_norms = np.sort(norms["projector_layers"])[::-1]  # Sorted
+
+    # Normalized rank
+    input_rank = np.linspace(0, 1, len(input_norms))
+    encoder_rank = np.linspace(0, 1, len(encoder_norms))
+    projector_rank = np.linspace(0, 1, len(projector_norms))
+
+    # Plot norms
+    plt.plot(input_rank, input_norms, label=f"Input Embedding", linestyle="-", marker="o", alpha=0.7)
+    plt.plot(encoder_rank, encoder_norms, label=f"Encoder ", linestyle="--", marker="s", alpha=0.7)
+    plt.plot(projector_rank, projector_norms, label=f"Projector ", linestyle="-.", marker="D", alpha=0.7)
+
+    # Add reference line for expected norm (1.0)
+    plt.axhline(y=1.0, color='black', linestyle='-', linewidth=1, label="Expected Norm")
+
+    # Labels and title
+    plt.xlabel("Normalized Rank")
+    plt.ylabel("L2 Norm")
+    plt.title("Distribution of Norms for Model Components")
+    plt.legend()
+    plt.grid(True)
+
+    plt.ylim(0.5, 1.5)
+
+    fig_path = os.path.join(save_path, fig_name)
+    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+    print(f"Figure saved at: {save_path}")
+
+    # Show the plot
+    plt.show()
+
 
 
 def main(args):
@@ -278,6 +396,12 @@ def main(args):
         normalize_matrices(model)
 
     for epoch in range(epoch_start, args.n_epochs):
+        # !!!!!!!
+        check_normalization(model)
+        print("Model loaded and checked. Ready for training!")
+
+        plot_embedding_norms(model, save_path=out_dir)
+        
         # initialise timing stats
         te_start = time.time()
         te0 = time.time()
@@ -300,6 +424,12 @@ def main(args):
         pbar = tqdm(data_iter, total=len(train_dataloader)-1, desc="Training")
 
         for i, (next_features, next_labels) in enumerate(pbar):
+
+            if i % 50 == 0:
+                check_normalization(model)
+                print(f"Model loaded and checked for {epoch}th iter")
+                plot_embedding_norms(model, save_path=out_dir, fig_name = f"embedding_norms {epoch}_{i}.png")
+            
             optimizer.zero_grad()
             lr = get_lr(i, epoch) if decay_lr else args.learning_rate
             for param_group in optimizer.param_groups:
