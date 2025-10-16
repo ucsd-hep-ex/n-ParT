@@ -36,7 +36,7 @@ lint:
 ## Format source code with black
 .PHONY: format
 format:
-	black --config pyproject.toml n_part
+	black --config pyproject.toml src
 
 
 
