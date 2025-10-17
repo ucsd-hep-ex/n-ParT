@@ -77,7 +77,7 @@ class Block(nn.Module):
 
         # Cast input to desired dtype at the start
         h = h.to(dtype=torch.bfloat16)
-
+        # (batch_size, seq_len, config.n_embd)
         hin = h
         if self.config.use_nGPT == 0:
             hin = self.rmsnorm_att(h)
